@@ -12,7 +12,7 @@ import (
 )
 
 // Load .env (base) + .env.<APP_ENV> (overrides)
-func LoadDotEnv(env string) {
+func loadDotEnv(env string) {
 	if env == "" {
 		env = "dev"
 	}
@@ -31,13 +31,11 @@ type ConnCfg struct {
 	SaslUsername     string
 	SaslPassword     string
 
-	// optional TLS
-	SSLCALocation                string // path to CA bundle if custom
-	SSLEndpointIdentificationAlg string // "https" (default)
-
 	// consumer
-	GroupID         string
-	AutoOffsetReset string // earliest/latest/none
+	GroupID            string
+	AutoOffsetReset    string // earliest/latest/none
+	EnablePartitionEof bool   // true to get partition EOF messages
+	IsolationLevel     string // read_committed/read_uncommitted
 
 	// producer
 	EnableIdempotence bool
@@ -50,16 +48,17 @@ type ConnCfg struct {
 	SocketKeepaliveMs int
 }
 
-// FromEnvPrefix reads envs with a prefix, e.g. "SRC_" or "TGT_"
-func FromEnvPrefix(prefix string) ConnCfg {
+func GetCfgFromEnv(env string) ConnCfg {
+	loadDotEnv(env)
+
 	get := func(k, def string) string {
-		if v := os.Getenv(prefix + k); v != "" {
+		if v := os.Getenv(k); v != "" {
 			return v
 		}
 		return def
 	}
 	getInt := func(k string, def int) int {
-		if v := os.Getenv(prefix + k); v != "" {
+		if v := os.Getenv(k); v != "" {
 			var out int
 			fmt.Sscanf(v, "%d", &out)
 			return out
@@ -67,7 +66,7 @@ func FromEnvPrefix(prefix string) ConnCfg {
 		return def
 	}
 	getBool := func(k string, def bool) bool {
-		v := strings.ToLower(os.Getenv(prefix + k))
+		v := strings.ToLower(os.Getenv(env + k))
 		switch v {
 		case "true", "1", "yes", "y":
 			return true
@@ -85,64 +84,54 @@ func FromEnvPrefix(prefix string) ConnCfg {
 		SaslUsername:     get("SASL_USERNAME", ""),
 		SaslPassword:     get("SASL_PASSWORD", ""),
 
-		SSLCALocation:                get("SSL_CA_LOCATION", ""),
-		SSLEndpointIdentificationAlg: get("SSL_ENDPOINT_IDENTIFICATION_ALGORITHM", "https"),
+		// ConsumerConfig
+		GroupID:            get("GROUP_ID", "kafkacopy-"+fmt.Sprint(time.Now().Unix())),
+		AutoOffsetReset:    get("AUTO_OFFSET_RESET", "earliest"),
+		IsolationLevel:     get("ISOLATION_LEVEL", "read_committed"),
+		EnablePartitionEof: getBool("ENABLE_PARTITION_EOF", true),
 
-		GroupID:         get("GROUP_ID", "kafkacopy-"+fmt.Sprint(time.Now().Unix())),
-		AutoOffsetReset: get("AUTO_OFFSET_RESET", "earliest"),
-
+		// ProducerConfig
 		EnableIdempotence: getBool("ENABLE_IDEMPOTENCE", true),
 		Acks:              get("ACKS", "all"),
 
-		LingerMs:          getInt("LINGER_MS", 5),
-		BatchNumMessages:  getInt("BATCH_NUM_MESSAGES", 10_000),
-		CompressionType:   get("COMPRESSION_TYPE", "lz4"),
-		SocketKeepaliveMs: getInt("SOCKET_KEEPALIVE_MS", 60_000),
+		LingerMs:         getInt("LINGER_MS", 100),
+		BatchNumMessages: getInt("BATCH_NUM_MESSAGES", 10_000),
+		CompressionType:  get("COMPRESSION_TYPE", "lz4"),
 	}
 }
 
 func (c ConnCfg) ProducerConfig() *kafka.ConfigMap {
-	m := &kafka.ConfigMap{
-		"bootstrap.servers":       c.BootstrapServers,
-		"security.protocol":       c.SecurityProtocol,
-		"sasl.mechanisms":         c.SaslMechanism,
-		"sasl.username":           c.SaslUsername,
-		"sasl.password":           c.SaslPassword,
-		"enable.idempotence":      c.EnableIdempotence,
-		"acks":                    c.Acks,
-		"linger.ms":               c.LingerMs,
-		"batch.num.messages":      c.BatchNumMessages,
-		"compression.type":        c.CompressionType,
-		"socket.keepalive.enable": true,
-		"socket.keepalive.ms":     c.SocketKeepaliveMs,
-	}
-	if c.SSLCALocation != "" {
-		m.SetKey("ssl.ca.location", c.SSLCALocation)
-	}
-	if c.SSLEndpointIdentificationAlg != "" {
-		m.SetKey("ssl.endpoint.identification.algorithm", c.SSLEndpointIdentificationAlg)
-	}
-	return m
-}
-
-func (c ConnCfg) ConsumerConfig() *kafka.ConfigMap {
 	m := &kafka.ConfigMap{
 		"bootstrap.servers":  c.BootstrapServers,
 		"security.protocol":  c.SecurityProtocol,
 		"sasl.mechanisms":    c.SaslMechanism,
 		"sasl.username":      c.SaslUsername,
 		"sasl.password":      c.SaslPassword,
-		"group.id":           c.GroupID,
-		"auto.offset.reset":  c.AutoOffsetReset,
-		"enable.auto.commit": false, // we'll commit ourselves
+		"enable.idempotence": c.EnableIdempotence,
+		"acks":               c.Acks,
+		"linger.ms":          c.LingerMs,
+		"batch.num.messages": c.BatchNumMessages,
+		"compression.type":   c.CompressionType,
+	}
+
+	return m
+}
+
+func (c ConnCfg) ConsumerConfig() *kafka.ConfigMap {
+	m := &kafka.ConfigMap{
+		"bootstrap.servers":    c.BootstrapServers,
+		"security.protocol":    c.SecurityProtocol,
+		"sasl.mechanisms":      c.SaslMechanism,
+		"sasl.username":        c.SaslUsername,
+		"sasl.password":        c.SaslPassword,
+		"group.id":             c.GroupID,
+		"isolation.level":      c.IsolationLevel,
+		"auto.offset.reset":    c.AutoOffsetReset,
+		"enable.auto.commit":   false, // we'll commit ourselves
+		"enable.partition.eof": c.EnablePartitionEof,
 		// cooperative-sticky is safer for rolling restarts on modern brokers
 		"partition.assignment.strategy": "cooperative-sticky",
 	}
-	if c.SSLCALocation != "" {
-		m.SetKey("ssl.ca.location", c.SSLCALocation)
-	}
-	if c.SSLEndpointIdentificationAlg != "" {
-		m.SetKey("ssl.endpoint.identification.algorithm", c.SSLEndpointIdentificationAlg)
-	}
+
 	return m
 }
