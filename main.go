@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
@@ -24,15 +23,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	config.LoadDotEnv(*env)
-
-	consumer, err := kafka.NewConsumer(config.ConnCfg{}.ConsumerConfig())
+	consumer, err := kafka.NewConsumer(config.GetCfgFromEnv(*env).ConsumerConfig())
 	if err != nil {
 		log.Fatalf("consumer init: %v", err)
 	}
 	defer consumer.Close()
 
-	producer, err := kafka.NewProducer(config.ConnCfg{}.ProducerConfig())
+	md, err := consumer.GetMetadata(source_topic, false, 5000)
+	if err != nil {
+		log.Fatalf("get metadata: %v", err)
+	}
+
+	var topicPartitions []kafka.TopicPartition
+	for _, p := range md.Topics[*source_topic].Partitions {
+		topicPartitions = append(topicPartitions, kafka.TopicPartition{
+			Topic:     source_topic,
+			Partition: p.ID,
+			Offset:    kafka.OffsetBeginning,
+		})
+	}
+	if err := consumer.Assign(topicPartitions); err != nil {
+		log.Fatalf("assign: %v", err)
+	}
+
+	producer, err := kafka.NewProducer(config.GetCfgFromEnv(*env).ProducerConfig())
 	if err != nil {
 		log.Fatalf("producer init: %v", err)
 	}
@@ -52,17 +66,11 @@ func main() {
 		}
 	}()
 
-	// Subscribe started
-	if err := consumer.Subscribe(*source_topic, nil); err != nil {
-		log.Fatalf("subscribe: %v", err)
-	}
-
 	sigc := make(chan os.Signal, 1)
 	osSignal := []os.Signal{os.Interrupt}
 	signal.Notify(sigc, osSignal...)
 
 	msgCount := 0
-	lastCommit := time.Now()
 
 	run := true
 	for run {
@@ -74,8 +82,12 @@ func main() {
 			ev := consumer.Poll(100)
 			switch m := ev.(type) {
 			case *kafka.Message:
-				tp := kafka.TopicPartition{Topic: target_topic, Partition: kafka.PartitionAny}
-				tp.Partition = m.TopicPartition.Partition
+				tp := kafka.TopicPartition{
+					Topic: target_topic,
+					// Partitioner decides the partition
+					Partition: kafka.PartitionAny,
+				}
+
 				if err := producer.Produce(&kafka.Message{
 					TopicPartition: tp,
 					Key:            m.Key,
@@ -87,15 +99,10 @@ func main() {
 				}
 
 				msgCount++
-				// simple periodic commit
-				if msgCount%10_000 == 0 || time.Since(lastCommit) > time.Second {
-					if _, err := consumer.Commit(); err != nil {
-						log.Printf("commit error: %v", err)
-					} else {
-						lastCommit = time.Now()
-					}
-				}
-
+			case kafka.PartitionEOF:
+				log.Printf("Messages %v are processed\n", msgCount)
+				log.Printf("%% Reached reached %v", m)
+				run = false
 			case kafka.Error:
 				log.Printf("[consumer] error: %v", m)
 			}
