@@ -2,15 +2,22 @@
 
 ## Requirements
 - Go v1.17 >=
-- MSVC
-
+- gcc
 
 ### Windows
+#### (1) [msys2](https://www.msys2.org/) install 
+####  (2) Open `MSYS2 MinGW 64-bit` terminal and run the following commands
+refer to this [issue](https://github.com/confluentinc/confluent-kafka-go/issues/889)
 ```bash
-$ choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --includeOptional"
+$ pacman -Syu
+$ pacman -S base-devel
+$ pacman -S mingw-w64-x86_64-toolchain
+$ pacman -Q -base
+$ pacman -S mingw-w64-ucrt-x86_64-gcc
 ```
+#### Add PATH
+Add `C:\msys64\mingw64\bin` to your system PATH environment variable.
 
-### Mac & Linux
 
 
 ## Usage
