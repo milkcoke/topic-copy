@@ -69,8 +69,11 @@ func main() {
 	sigc := make(chan os.Signal, 1)
 	osSignal := []os.Signal{os.Interrupt}
 	signal.Notify(sigc, osSignal...)
-
 	msgCount := 0
+
+	// 파티션별 EOF 상태 추적용 맵
+	eofMap := make(map[int32]bool)
+	totalPartitionCount := len(md.Topics[*source_topic].Partitions)
 
 	run := true
 	for run {
@@ -100,9 +103,14 @@ func main() {
 
 				msgCount++
 			case kafka.PartitionEOF:
-				log.Printf("Messages %v are processed\n", msgCount)
-				log.Printf("%% Reached reached %v", m)
-				run = false
+				if !eofMap[m.Partition] {
+					log.Printf("%% Reached %v", m)
+					eofMap[m.Partition] = true // 해당 파티션이 EOF에 도달했음을 기록
+				}
+				if len(eofMap) == totalPartitionCount {
+					log.Printf("Messages %v are processed\n", msgCount)
+					run = false
+				}
 			case kafka.Error:
 				log.Printf("[consumer] error: %v", m)
 			}
