@@ -12,7 +12,7 @@ refer to this [issue](https://github.com/confluentinc/confluent-kafka-go/issues/
 $ pacman -Syu
 $ pacman -S base-devel
 $ pacman -S mingw-w64-x86_64-toolchain
-$ pacman -Q -base
+$ pacman -Q -e
 $ pacman -S mingw-w64-ucrt-x86_64-gcc
 ```
 #### Add PATH
