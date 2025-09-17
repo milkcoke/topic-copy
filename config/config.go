@@ -28,8 +28,8 @@ type ConnCfg struct {
 	BootstrapServers string
 	SecurityProtocol string // SASL_SSL
 	SaslMechanism    string // SCRAM-SHA-512
-	SaslUsername     string
-	SaslPassword     string
+	Username         string
+	Password         string
 
 	// consumer
 	GroupID            string
@@ -81,8 +81,8 @@ func GetCfgFromEnv(env string) ConnCfg {
 		BootstrapServers: get("BOOTSTRAP_SERVERS", ""),
 		SecurityProtocol: get("SECURITY_PROTOCOL", "SASL_SSL"),
 		SaslMechanism:    get("SASL_MECHANISM", "SCRAM-SHA-512"),
-		SaslUsername:     get("SASL_USERNAME", ""),
-		SaslPassword:     get("SASL_PASSWORD", ""),
+		Username:         get("USERNAME", ""),
+		Password:         get("PASSWORD", ""),
 
 		// ConsumerConfig
 		GroupID:            get("GROUP_ID", "kafkacopy-"+fmt.Sprint(time.Now().Unix())),
@@ -105,8 +105,8 @@ func (c ConnCfg) ProducerConfig() *kafka.ConfigMap {
 		"bootstrap.servers":  c.BootstrapServers,
 		"security.protocol":  c.SecurityProtocol,
 		"sasl.mechanisms":    c.SaslMechanism,
-		"sasl.username":      c.SaslUsername,
-		"sasl.password":      c.SaslPassword,
+		"sasl.username":      c.Username,
+		"sasl.password":      c.Password,
 		"enable.idempotence": c.EnableIdempotence,
 		"acks":               c.Acks,
 		"linger.ms":          c.LingerMs,
@@ -122,8 +122,8 @@ func (c ConnCfg) ConsumerConfig() *kafka.ConfigMap {
 		"bootstrap.servers":    c.BootstrapServers,
 		"security.protocol":    c.SecurityProtocol,
 		"sasl.mechanisms":      c.SaslMechanism,
-		"sasl.username":        c.SaslUsername,
-		"sasl.password":        c.SaslPassword,
+		"sasl.username":        c.Username,
+		"sasl.password":        c.Password,
 		"group.id":             c.GroupID,
 		"isolation.level":      c.IsolationLevel,
 		"auto.offset.reset":    c.AutoOffsetReset,
