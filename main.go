@@ -13,12 +13,12 @@ import (
 
 func main() {
 	env := flag.String("env", "dev", "Environment (dev, test, prod)")
-	source_topic := flag.String("source_topic", "", "Source topic name")
-	target_topic := flag.String("target_topic", "", "Target topic name")
+	sourceTopic := flag.String("source_topic", "", "Source topic name")
+	targetTopic := flag.String("target_topic", "", "Target topic name")
 	//preservePartitions := true
 	flag.Parse()
 
-	if *source_topic == "" || *target_topic == "" {
+	if *sourceTopic == "" || *targetTopic == "" {
 		fmt.Println("Usage: go run main.go --source_topic <source_topic_name> --target_topic <target_topic_name>")
 		os.Exit(1)
 	}
@@ -29,20 +29,20 @@ func main() {
 	}
 	defer consumer.Close()
 
-	md, err := consumer.GetMetadata(source_topic, false, 5000)
+	md, err := consumer.GetMetadata(sourceTopic, false, 5000)
 	if err != nil {
 		log.Fatalf("get metadata: %v", err)
 	}
 
-	var topicPartitions []kafka.TopicPartition
-	for _, p := range md.Topics[*source_topic].Partitions {
-		topicPartitions = append(topicPartitions, kafka.TopicPartition{
-			Topic:     source_topic,
+	var originalTopicPartitions []kafka.TopicPartition
+	for _, p := range md.Topics[*sourceTopic].Partitions {
+		originalTopicPartitions = append(originalTopicPartitions, kafka.TopicPartition{
+			Topic:     sourceTopic,
 			Partition: p.ID,
 			Offset:    kafka.OffsetBeginning,
 		})
 	}
-	if err := consumer.Assign(topicPartitions); err != nil {
+	if err := consumer.Assign(originalTopicPartitions); err != nil {
 		log.Fatalf("assign: %v", err)
 	}
 
@@ -71,9 +71,12 @@ func main() {
 	signal.Notify(sigc, osSignal...)
 	msgCount := 0
 
+	// 파티션별 마지막 오프셋 추적용 맵
+	lastOffsetMap := make(map[int32]kafka.Offset)
+
 	// 파티션별 EOF 상태 추적용 맵
 	partitionEofMap := make(map[int32]bool)
-	totalPartitionCount := len(md.Topics[*source_topic].Partitions)
+	totalPartitionCount := len(md.Topics[*sourceTopic].Partitions)
 
 	run := true
 	for run {
@@ -86,7 +89,7 @@ func main() {
 			switch m := ev.(type) {
 			case *kafka.Message:
 				tp := kafka.TopicPartition{
-					Topic: target_topic,
+					Topic: targetTopic,
 					// Partitioner decides the partition
 					Partition: kafka.PartitionAny,
 				}
@@ -100,7 +103,7 @@ func main() {
 				}, nil); err != nil {
 					log.Printf("produce error: %v", err)
 				}
-
+				lastOffsetMap[m.TopicPartition.Partition] = m.TopicPartition.Offset
 				msgCount++
 			case kafka.PartitionEOF:
 				if !partitionEofMap[m.Partition] {
@@ -111,6 +114,24 @@ func main() {
 					log.Printf("Messages %v are processed\n", msgCount)
 					run = false
 				}
+
+				// Re-assign to exclude the partition that reached EOF
+				var newAssignedPartitions []kafka.TopicPartition
+				for _, tp := range originalTopicPartitions {
+					if tp.Partition == m.Partition {
+						continue
+					}
+					newAssignedPartitions = append(newAssignedPartitions, kafka.TopicPartition{
+						Topic:     tp.Topic,
+						Partition: tp.Partition,
+						Offset:    lastOffsetMap[tp.Partition] + 1,
+					})
+				}
+				if err := consumer.Assign(newAssignedPartitions); err != nil {
+					log.Fatalf("Error occurs re-assign after EOF: %v", err)
+				}
+				originalTopicPartitions = newAssignedPartitions
+
 			case kafka.Error:
 				log.Printf("[consumer] error: %v", m)
 			}
