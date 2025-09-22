@@ -29,19 +29,32 @@ func main() {
 	}
 	defer consumer.Close()
 
+	/**
+	1. Stop the application producing to the source topic.
+	2. Get the End offsets for all partitions of the source topic.
+	3. Start consuming from the source topic.
+	4. For each partition, keep track of the last consumed offset.
+	5. When the last consumed offset for a partition reaches the End offset - 1, stop consuming from that partition.
+	6. Once all partitions have reached their End offsets, stop the consumer.
+	*/
+
 	md, err := consumer.GetMetadata(sourceTopic, false, 5000)
 	if err != nil {
 		log.Fatalf("get metadata: %v", err)
 	}
 
 	var prevAssignedPartitions []kafka.TopicPartition
+	var endOffsetMap = make(map[int32]kafka.Offset)
 	for _, p := range md.Topics[*sourceTopic].Partitions {
 		prevAssignedPartitions = append(prevAssignedPartitions, kafka.TopicPartition{
 			Topic:     sourceTopic,
 			Partition: p.ID,
 			Offset:    kafka.OffsetBeginning,
 		})
+		_, endOffset, _ := consumer.QueryWatermarkOffsets(*sourceTopic, p.ID, 5000)
+		endOffsetMap[p.ID] = kafka.Offset(endOffset - 1) // last offset recorded
 	}
+
 	if err := consumer.Assign(prevAssignedPartitions); err != nil {
 		log.Fatalf("assign: %v", err)
 	}
@@ -71,16 +84,6 @@ func main() {
 	signal.Notify(sigc, osSignal...)
 	msgCount := 0
 
-	// 파티션별 마지막 오프셋 추적용 맵, 기본 값은 OffsetBeginning
-	lastCommitOffsetMap := make(map[int32]kafka.Offset)
-	for _, p := range md.Topics[*sourceTopic].Partitions {
-		lastCommitOffsetMap[p.ID] = kafka.OffsetBeginning
-	}
-
-	// 파티션별 EOF 상태 추적용 맵
-	partitionEofMap := make(map[int32]bool)
-	totalPartitionCount := len(md.Topics[*sourceTopic].Partitions)
-
 	run := true
 	for run {
 		select {
@@ -107,38 +110,26 @@ func main() {
 					log.Printf("produce error: %v", err)
 				}
 
-				lastCommitOffsetMap[m.TopicPartition.Partition] = m.TopicPartition.Offset + 1
-				msgCount++
-			case kafka.PartitionEOF:
-				if !partitionEofMap[m.Partition] {
-					log.Printf("%% Reached %v", m)
-					partitionEofMap[m.Partition] = true // 해당 파티션이 EOF에 도달했음을 기록
-				}
-				if len(partitionEofMap) == totalPartitionCount {
-					log.Printf("Messages %v are processed\n", msgCount)
-					consumer.Unassign()
-					run = false
-				}
-
-				var newAssignedPartitions []kafka.TopicPartition
-				for _, tp := range prevAssignedPartitions {
-					if tp.Partition == m.Partition {
-						continue
+				// Reached to End of Offset for this partition
+				if m.TopicPartition.Offset >= endOffsetMap[m.TopicPartition.Partition] {
+					err := consumer.IncrementalUnassign([]kafka.TopicPartition{{
+						Topic:     sourceTopic,
+						Partition: m.TopicPartition.Partition,
+					}})
+					if err != nil {
+						log.Fatalf("Failed to incremental unassign: %v", err)
 					}
-					newAssignedPartitions = append(newAssignedPartitions, kafka.TopicPartition{
-						Topic:     tp.Topic,
-						Partition: tp.Partition,
-						Offset:    lastCommitOffsetMap[tp.Partition],
-					})
-				}
-				if len(newAssignedPartitions) == 0 {
-					continue
-				}
-				if err := consumer.Assign(newAssignedPartitions); err != nil {
-					log.Fatalf("Error occurs re-assign after EOF: %v", err)
-				}
-				prevAssignedPartitions = newAssignedPartitions
 
+					log.Printf("Reached end offset for partition %v, unassigned it", m.TopicPartition.Partition)
+					var assignment, _ = consumer.Assignment()
+
+					// No more assigned partitions, we are done
+					if len(assignment) == 0 {
+						run = false
+					}
+				}
+
+				msgCount++
 			case kafka.Error:
 				log.Printf("[consumer] error: %v", m)
 			}
