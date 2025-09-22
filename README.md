@@ -21,6 +21,11 @@ Add `C:\msys64\mingw64\bin` to your system PATH environment variable.
 
 
 ## Usage
+
+### Stop the application
+⚠️You should **stop** the application producing data to the source topic before running this tool.
+
+### Execute CLI
 ```bash
 $ go main.go --env {env} --source_topic <source_topic_name> --target_topic <target_topic_name>
 ```
