@@ -34,15 +34,15 @@ func main() {
 		log.Fatalf("get metadata: %v", err)
 	}
 
-	var originalTopicPartitions []kafka.TopicPartition
+	var prevAssignedPartitions []kafka.TopicPartition
 	for _, p := range md.Topics[*sourceTopic].Partitions {
-		originalTopicPartitions = append(originalTopicPartitions, kafka.TopicPartition{
+		prevAssignedPartitions = append(prevAssignedPartitions, kafka.TopicPartition{
 			Topic:     sourceTopic,
 			Partition: p.ID,
 			Offset:    kafka.OffsetBeginning,
 		})
 	}
-	if err := consumer.Assign(originalTopicPartitions); err != nil {
+	if err := consumer.Assign(prevAssignedPartitions); err != nil {
 		log.Fatalf("assign: %v", err)
 	}
 
@@ -71,8 +71,11 @@ func main() {
 	signal.Notify(sigc, osSignal...)
 	msgCount := 0
 
-	// 파티션별 마지막 오프셋 추적용 맵
-	lastOffsetMap := make(map[int32]kafka.Offset)
+	// 파티션별 마지막 오프셋 추적용 맵, 기본 값은 OffsetBeginning
+	lastCommitOffsetMap := make(map[int32]kafka.Offset)
+	for _, p := range md.Topics[*sourceTopic].Partitions {
+		lastCommitOffsetMap[p.ID] = kafka.OffsetBeginning
+	}
 
 	// 파티션별 EOF 상태 추적용 맵
 	partitionEofMap := make(map[int32]bool)
@@ -103,7 +106,8 @@ func main() {
 				}, nil); err != nil {
 					log.Printf("produce error: %v", err)
 				}
-				lastOffsetMap[m.TopicPartition.Partition] = m.TopicPartition.Offset
+
+				lastCommitOffsetMap[m.TopicPartition.Partition] = m.TopicPartition.Offset + 1
 				msgCount++
 			case kafka.PartitionEOF:
 				if !partitionEofMap[m.Partition] {
@@ -112,25 +116,28 @@ func main() {
 				}
 				if len(partitionEofMap) == totalPartitionCount {
 					log.Printf("Messages %v are processed\n", msgCount)
+					consumer.Unassign()
 					run = false
 				}
 
-				// Re-assign to exclude the partition that reached EOF
 				var newAssignedPartitions []kafka.TopicPartition
-				for _, tp := range originalTopicPartitions {
+				for _, tp := range prevAssignedPartitions {
 					if tp.Partition == m.Partition {
 						continue
 					}
 					newAssignedPartitions = append(newAssignedPartitions, kafka.TopicPartition{
 						Topic:     tp.Topic,
 						Partition: tp.Partition,
-						Offset:    lastOffsetMap[tp.Partition] + 1,
+						Offset:    lastCommitOffsetMap[tp.Partition],
 					})
+				}
+				if len(newAssignedPartitions) == 0 {
+					continue
 				}
 				if err := consumer.Assign(newAssignedPartitions); err != nil {
 					log.Fatalf("Error occurs re-assign after EOF: %v", err)
 				}
-				originalTopicPartitions = newAssignedPartitions
+				prevAssignedPartitions = newAssignedPartitions
 
 			case kafka.Error:
 				log.Printf("[consumer] error: %v", m)
