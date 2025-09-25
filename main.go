@@ -52,6 +52,7 @@ func main() {
 			Offset:    kafka.OffsetBeginning,
 		})
 		_, endOffset, _ := consumer.QueryWatermarkOffsets(*sourceTopic, p.ID, 5000)
+		// FIXME: endOffset can be Control Record even though -1
 		endOffsetMap[p.ID] = kafka.Offset(endOffset - 1) // last offset recorded
 	}
 
@@ -99,7 +100,6 @@ func main() {
 					// Partitioner decides the partition
 					Partition: kafka.PartitionAny,
 				}
-
 				if err := producer.Produce(&kafka.Message{
 					TopicPartition: tp,
 					Key:            m.Key,
